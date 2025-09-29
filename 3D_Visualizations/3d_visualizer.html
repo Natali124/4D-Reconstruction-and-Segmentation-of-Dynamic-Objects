@@ -1,0 +1,1073 @@
+pointSizeSlider.addEventListener('input', (e) => {
+                const size = parseFloat(e.target.value);
+                pointSizeValue.textContent = size.toFixed(1);
+                
+                // Update all point materials
+                if (pointCloud) {
+                    pointCloud.traverse((child) => {
+                        if (child.material && child.material.size !== undefined) {
+                            // Check if this is a depth point (smaller) or track point (normal)
+                            const isDepthPoint = child.material.size < size; // Depth points are smaller
+                            child.material.size = isDepthPoint ? size * 0.5 : size;
+                        }
+                    });
+                }
+                if (predictedPointsGroup && predictedPointsGroup.material) {
+                    predictedPointsGroup.material.size = size * 1.2;
+                }
+            });<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Point Cloud Visualizer with Track Arrows and Error Lines</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #000;
+            font-family: Arial, sans-serif;
+            overflow: hidden;
+        }
+        
+        #container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        
+        #controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 100;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 8px;
+            color: white;
+            max-width: 320px;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+        
+        #fileInput {
+            margin: 10px 0;
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background: white;
+            color: black;
+        }
+        
+        #info {
+            margin-top: 15px;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+        
+        .control-group {
+            margin: 10px 0;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 12px;
+        }
+        
+        input[type="range"] {
+            width: 100%;
+        }
+        
+        button {
+            padding: 8px 12px;
+            margin: 5px 5px 5px 0;
+            border: none;
+            border-radius: 4px;
+            background: #007acc;
+            color: white;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        
+        button:hover {
+            background: #005a9e;
+        }
+        
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 18px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="controls">
+            <h3>3D Point Cloud with Error Lines</h3>
+            <input type="file" id="fileInput" accept=".json" />
+            
+            <div class="control-group">
+                <label for="pointSize">Point Size: <span id="pointSizeValue">1.0</span></label>
+                <input type="range" id="pointSize" min="0.1" max="20" step="0.1" value="1.0">
+            </div>
+            
+            <div class="control-group">
+                <label for="arrowScale">Arrow Scale: <span id="arrowScaleValue">1.0</span></label>
+                <input type="range" id="arrowScale" min="0.1" max="5.0" step="0.1" value="1.0">
+            </div>
+            
+            <div class="control-group">
+                <label for="errorLineScale">Error Line Scale: <span id="errorLineScaleValue">1.0</span></label>
+                <input type="range" id="errorLineScale" min="0.1" max="5.0" step="0.1" value="1.0">
+            </div>
+            
+            <div class="control-group" id="timeControls" style="display: none;">
+                <label for="timeSlider">Frame: <span id="frameValue">0</span> / <span id="totalFrames">0</span></label>
+                <input type="range" id="timeSlider" min="1" max="1" step="1" value="1">
+                <div style="margin-top: 5px;">
+                    <button id="playPause">Play</button>
+                    <button id="stepBack">◀</button>
+                    <button id="stepForward">▶</button>
+                    <label style="display: inline; margin-left: 10px;">Speed: 
+                        <select id="playSpeed">
+                            <option value="100">Slow</option>
+                            <option value="200" selected>Normal</option>
+                            <option value="500">Fast</option>
+                            <option value="1000">Very Fast</option>
+                        </select>
+                    </label>
+                </div>
+            </div>
+            
+            <div class="control-group">
+                <button id="resetView">Reset View</button>
+                <button id="toggleColors">Toggle Colors</button>
+                <button id="toggleArrows">Hide Arrows</button>
+                <button id="toggleDepthPoints">Hide Depth Points</button>
+                <button id="toggleErrorLines">Hide Error Lines</button>
+                <button id="togglePredictedPoints">Hide Predicted Points</button>
+            </div>
+            
+            <div id="info">
+                <strong>Controls:</strong><br>
+                • Mouse: Rotate view<br>
+                • Wheel: Zoom in/out<br>
+                • Arrows: Move camera<br>
+                <br>
+                <div id="pointCount">No points loaded</div>
+                <div id="multiFrameInfo" style="display: none;"></div>
+            </div>
+        </div>
+        
+        <div id="loading">Loading point cloud...</div>
+    </div>
+
+    <script>
+        // Global variables
+        let scene, camera, renderer, pointCloud, arrowGroup, errorLineGroup, predictedPointsGroup;
+        let pointsData = null;
+        let useColors = true;
+        let showArrows = true;
+        let showDepthPoints = true;
+        let showErrorLines = true;
+        let showPredictedPoints = true;
+        let originalCameraPosition = null;
+        
+        // Multi-frame variables
+        let isMultiFrame = false;
+        let currentFrameIndex = 0;
+        let isPlaying = false;
+        let playInterval = null;
+
+        function createBetterPointMaterial(size, isDepthPoint = false) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 32;
+            canvas.height = 32;
+            const context = canvas.getContext('2d');
+            
+            context.clearRect(0, 0, 32, 32);
+            context.fillStyle = 'white';
+            context.beginPath();
+            context.arc(16, 16, 14, 0, Math.PI * 2);
+            context.fill();
+            
+            const texture = new THREE.CanvasTexture(canvas);
+            
+            // Make depth points smaller by using half the size
+            const actualSize = isDepthPoint ? size * 0.5 : size;
+            
+            return new THREE.PointsMaterial({
+                size: actualSize,
+                map: texture,
+                vertexColors: true,
+                transparent: true,
+                alphaTest: 0.1,
+                sizeAttenuation: true
+            });
+        }
+
+        function createArrowGeometry(start, end, scale = 1.0) {
+            const startVec = new THREE.Vector3(start[0], start[1], start[2]);
+            const endVec = new THREE.Vector3(end[0], end[1], end[2]);
+            const direction = new THREE.Vector3().subVectors(endVec, startVec);
+            const length = direction.length();
+            
+            if (length < 0.01) {
+                return null; // Too small to visualize
+            }
+            
+            // Create a simple line for the arrow shaft
+            const points = [startVec, endVec];
+            const geometry = new THREE.BufferGeometry().setFromPoints(points);
+            const material = new THREE.LineBasicMaterial({ color: 0xff0000, linewidth: 3 });
+            const line = new THREE.Line(geometry, material);
+            
+            // Create arrow head at the end point
+            const headGeometry = new THREE.ConeGeometry(0.02 * scale, 0.1 * scale, 8);
+            const headMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+            const head = new THREE.Mesh(headGeometry, headMaterial);
+            
+            // Position and orient the head
+            head.position.copy(endVec);
+            direction.normalize();
+            const up = new THREE.Vector3(0, 1, 0);
+            head.quaternion.setFromUnitVectors(up, direction);
+            
+            // Group them together
+            const arrowGroup = new THREE.Group();
+            arrowGroup.add(line);
+            arrowGroup.add(head);
+            
+            return arrowGroup;
+        }
+
+        function createErrorLine(observed, predicted, color = [1.0, 1.0, 1.0], scale = 1.0) {
+            const observedVec = new THREE.Vector3(observed[0], observed[1], observed[2]);
+            const predictedVec = new THREE.Vector3(predicted[0], predicted[1], predicted[2]);
+            
+            const distance = observedVec.distanceTo(predictedVec);
+            if (distance < 0.001) {
+                return null; // Too small to visualize
+            }
+            
+            // Create line connecting observed to predicted point
+            const points = [observedVec, predictedVec];
+            const geometry = new THREE.BufferGeometry().setFromPoints(points);
+            
+            // Use the provided color (cluster color or white)
+            const material = new THREE.LineBasicMaterial({ 
+                color: new THREE.Color(color[0], color[1], color[2]),
+                linewidth: 2,
+                transparent: true,
+                opacity: 0.8
+            });
+            
+            return new THREE.Line(geometry, material);
+        }
+
+        function loadArrows(arrows, scale = 1.0) {
+            // Remove existing arrows
+            if (arrowGroup) {
+                scene.remove(arrowGroup);
+                arrowGroup.traverse((child) => {
+                    if (child.geometry) child.geometry.dispose();
+                    if (child.material) child.material.dispose();
+                });
+            }
+            
+            arrowGroup = new THREE.Group();
+            
+            let validArrows = 0;
+            for (const arrow of arrows) {
+                const arrowMesh = createArrowGeometry(arrow.start, arrow.end, scale);
+                if (arrowMesh) {
+                    arrowGroup.add(arrowMesh);
+                    validArrows++;
+                }
+            }
+            
+            if (showArrows && validArrows > 0) {
+                scene.add(arrowGroup);
+            }
+        }
+
+        function loadErrorLines(errorLines, scale = 1.0) {
+            // Remove existing error lines
+            if (errorLineGroup) {
+                scene.remove(errorLineGroup);
+                errorLineGroup.traverse((child) => {
+                    if (child.geometry) child.geometry.dispose();
+                    if (child.material) child.material.dispose();
+                });
+            }
+            
+            errorLineGroup = new THREE.Group();
+            
+            let validLines = 0;
+            for (const errorLine of errorLines) {
+                // Use the color from the error line data, default to white if not provided
+                const color = errorLine.color || [1.0, 1.0, 1.0];
+                const lineMesh = createErrorLine(errorLine.observed, errorLine.predicted, color, scale);
+                if (lineMesh) {
+                    errorLineGroup.add(lineMesh);
+                    validLines++;
+                }
+            }
+            
+            if (showErrorLines && validLines > 0) {
+                scene.add(errorLineGroup);
+            }
+            
+            console.log(`Loaded ${validLines} error lines with cluster colors`);
+        }
+
+        function loadPredictedPoints(predictedPoints) {
+            // Remove existing predicted points
+            if (predictedPointsGroup) {
+                scene.remove(predictedPointsGroup);
+                predictedPointsGroup.traverse((child) => {
+                    if (child.geometry) child.geometry.dispose();
+                    if (child.material) child.material.dispose();
+                });
+            }
+            
+            if (!predictedPoints || predictedPoints.length === 0) {
+                return;
+            }
+            
+            const geometry = new THREE.BufferGeometry();
+            const positions = new Float32Array(predictedPoints.length * 3);
+            const colors = new Float32Array(predictedPoints.length * 3);
+            
+            for (let i = 0; i < predictedPoints.length; i++) {
+                positions[i * 3] = predictedPoints[i][0];
+                positions[i * 3 + 1] = predictedPoints[i][1];
+                positions[i * 3 + 2] = predictedPoints[i][2];
+                
+                // Use cyan color for predicted points
+                colors[i * 3] = 0.0;     // Red
+                colors[i * 3 + 1] = 1.0; // Green
+                colors[i * 3 + 2] = 1.0; // Blue
+            }
+            
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+            
+            const material = createBetterPointMaterial(parseFloat(document.getElementById('pointSize').value) * 1.2);
+            predictedPointsGroup = new THREE.Points(geometry, material);
+            
+            if (showPredictedPoints) {
+                scene.add(predictedPointsGroup);
+            }
+            
+            console.log(`Loaded ${predictedPoints.length} predicted points`);
+        }
+
+        function loadPointCloudGeometry(points, colors, trackStartPoints = [], trackArrows = [], errorLines = [], predictedPoints = []) {
+            // Proper cleanup of existing point cloud
+            if (pointCloud) {
+                scene.remove(pointCloud);
+                if (pointCloud.geometry) {
+                    pointCloud.geometry.dispose();
+                }
+                if (pointCloud.material) {
+                    pointCloud.material.dispose();
+                }
+                // If it's a group, clean up children
+                if (pointCloud.children) {
+                    pointCloud.traverse((child) => {
+                        if (child.geometry) child.geometry.dispose();
+                        if (child.material) child.material.dispose();
+                    });
+                }
+                pointCloud = null;
+            }
+            
+            // Create a new group to hold all point clouds
+            pointCloud = new THREE.Group();
+            scene.add(pointCloud);
+            
+            // Separate depth points from track points based on their origin
+            // Since we can't easily distinguish by color anymore, we'll use a different approach:
+            // Track points typically have very saturated/specific cluster colors
+            // Depth points have more natural RGB variations from the image
+            let depthPoints = [];
+            let depthColors = [];
+            let trackPoints = [];
+            let trackPointColors = [];
+            
+            // Categorize points - track points are likely to have specific cluster colors
+            // while depth points have more natural image colors
+            for (let i = 0; i < points.length; i++) {
+                const color = colors[i];
+                
+                // Check if this looks like a cluster color (pure colors from our palette)
+                // or natural image colors (more varied)
+                const isPureRed = (color[0] === 1.0 && color[1] === 0.0 && color[2] === 0.0);
+                const isPureGreen = (color[0] === 0.0 && color[1] === 1.0 && color[2] === 0.0);
+                const isPureBlue = (color[0] === 0.0 && color[1] === 0.0 && color[2] === 1.0);
+                const isPureYellow = (color[0] === 1.0 && color[1] === 1.0 && color[2] === 0.0);
+                const isPureMagenta = (color[0] === 1.0 && color[1] === 0.0 && color[2] === 1.0);
+                const isPureCyan = (color[0] === 0.0 && color[1] === 1.0 && color[2] === 1.0);
+                const isPureOrange = (color[0] === 1.0 && color[1] === 0.5 && color[2] === 0.0);
+                const isPurePurple = (color[0] === 0.5 && color[1] === 0.0 && color[2] === 1.0);
+                const isBlack = (color[0] === 0.0 && color[1] === 0.0 && color[2] === 0.0);
+                
+                const isClusterColor = isPureRed || isPureGreen || isPureBlue || isPureYellow || 
+                                     isPureMagenta || isPureCyan || isPureOrange || isPurePurple || isBlack;
+                
+                if (isClusterColor) {
+                    trackPoints.push(points[i]);
+                    trackPointColors.push(color);
+                } else {
+                    // Assume this is a depth point with natural image color
+                    depthPoints.push(points[i]);
+                    depthColors.push(color);
+                }
+            }
+            
+            // Create separate point clouds for depth and track points with different sizes
+            const pointSize = parseFloat(document.getElementById('pointSize').value);
+            
+            // Create depth points with smaller size
+            if (depthPoints.length > 0 && showDepthPoints) {
+                const depthGeometry = new THREE.BufferGeometry();
+                const depthPositions = new Float32Array(depthPoints.length * 3);
+                const depthPointColors = new Float32Array(depthPoints.length * 3);
+                
+                for (let i = 0; i < depthPoints.length; i++) {
+                    depthPositions[i * 3] = depthPoints[i][0];
+                    depthPositions[i * 3 + 1] = depthPoints[i][1];
+                    depthPositions[i * 3 + 2] = depthPoints[i][2];
+                    
+                    depthPointColors[i * 3] = depthColors[i][0];
+                    depthPointColors[i * 3 + 1] = depthColors[i][1];
+                    depthPointColors[i * 3 + 2] = depthColors[i][2];
+                }
+                
+                depthGeometry.setAttribute('position', new THREE.BufferAttribute(depthPositions, 3));
+                depthGeometry.setAttribute('color', new THREE.BufferAttribute(depthPointColors, 3));
+                
+                const depthMaterial = createBetterPointMaterial(pointSize, true); // true = isDepthPoint
+                const depthPointCloud = new THREE.Points(depthGeometry, depthMaterial);
+                pointCloud.add(depthPointCloud);
+            }
+            
+            // Combine track points with legacy track start points
+            let allTrackPoints = [...trackPoints];
+            let allTrackColors = [...trackPointColors];
+            
+            // Add track start points if they exist (legacy support)
+            if (trackStartPoints && trackStartPoints.length > 0) {
+                allTrackPoints = allTrackPoints.concat(trackStartPoints);
+                // Add bright green color [0, 1, 0] for each track start point
+                const greenColors = trackStartPoints.map(() => [0.0, 1.0, 0.0]);
+                allTrackColors = allTrackColors.concat(greenColors);
+            }
+            
+            // Create track points with normal size
+            if (allTrackPoints.length > 0) {
+                const trackGeometry = new THREE.BufferGeometry();
+                const trackPositions = new Float32Array(allTrackPoints.length * 3);
+                const trackPointColors = new Float32Array(allTrackPoints.length * 3);
+                
+                for (let i = 0; i < allTrackPoints.length; i++) {
+                    trackPositions[i * 3] = allTrackPoints[i][0];
+                    trackPositions[i * 3 + 1] = allTrackPoints[i][1];
+                    trackPositions[i * 3 + 2] = allTrackPoints[i][2];
+                    
+                    trackPointColors[i * 3] = allTrackColors[i][0];
+                    trackPointColors[i * 3 + 1] = allTrackColors[i][1];
+                    trackPointColors[i * 3 + 2] = allTrackColors[i][2];
+                }
+                
+                trackGeometry.setAttribute('position', new THREE.BufferAttribute(trackPositions, 3));
+                trackGeometry.setAttribute('color', new THREE.BufferAttribute(trackPointColors, 3));
+                
+                const trackMaterial = createBetterPointMaterial(pointSize, false); // false = not depth point
+                const trackPointCloud = new THREE.Points(trackGeometry, trackMaterial);
+                pointCloud.add(trackPointCloud);
+            }
+            
+            console.log(`Rendering points: depth=${showDepthPoints ? depthPoints.length : 0} (small), track=${trackPoints.length} (normal), legacy_track_start=${trackStartPoints.length} (normal)`);
+            
+            // Load red arrows
+            if (trackArrows && trackArrows.length > 0) {
+                const arrowScale = parseFloat(document.getElementById('arrowScale').value);
+                loadArrows(trackArrows, arrowScale);
+            }
+            
+            // Load error lines
+            if (errorLines && errorLines.length > 0) {
+                const errorLineScale = parseFloat(document.getElementById('errorLineScale').value);
+                loadErrorLines(errorLines, errorLineScale);
+            }
+            
+            // Load predicted points
+            if (predictedPoints && predictedPoints.length > 0) {
+                loadPredictedPoints(predictedPoints);
+            }
+        }
+
+        function loadFrameAtIndex(frameIndex) {
+            if (!isMultiFrame || !pointsData || frameIndex >= pointsData.total_frames) return;
+            
+            const frameData = pointsData.frames[frameIndex];
+            currentFrameIndex = frameIndex;
+            
+            document.getElementById('frameValue').textContent = frameData.frame_index;
+            document.getElementById('timeSlider').value = frameIndex;
+            
+            loadPointCloudGeometry(
+                frameData.points, 
+                frameData.colors, 
+                frameData.track_start_points || [],
+                frameData.track_arrows || [],
+                frameData.error_lines || [],
+                frameData.predicted_points || []
+            );
+            
+            let infoText = `Frame ${frameData.frame_index}: ${frameData.points.length.toLocaleString()} points`;
+            if (frameData.track_start_points && frameData.track_start_points.length > 0) {
+                infoText += `, ${frameData.track_start_points.length} track points (green)`;
+            }
+            if (frameData.track_arrows && frameData.track_arrows.length > 0) {
+                infoText += `, ${frameData.track_arrows.length} arrows (red)`;
+            }
+            if (frameData.error_lines && frameData.error_lines.length > 0) {
+                infoText += `, ${frameData.error_lines.length} error lines`;
+            }
+            if (frameData.predicted_points && frameData.predicted_points.length > 0) {
+                infoText += `, ${frameData.predicted_points.length} predicted points (cyan)`;
+            }
+            document.getElementById('pointCount').innerHTML = infoText;
+        }
+
+        function loadSingleFramePointCloud(data) {
+            isMultiFrame = false;
+            document.getElementById('timeControls').style.display = 'none';
+            document.getElementById('multiFrameInfo').style.display = 'none';
+            
+            loadPointCloudGeometry(
+                data.points, 
+                data.colors, 
+                data.track_start_points || [],
+                data.track_arrows || [],
+                data.error_lines || [],
+                data.predicted_points || []
+            );
+            
+            let infoText = `Points loaded: ${data.points.length.toLocaleString()}<br>`;
+            if (data.track_arrows && data.track_arrows.length > 0) {
+                infoText += `Arrows: ${data.track_arrows.length.toLocaleString()}<br>`;
+            }
+            if (data.error_lines && data.error_lines.length > 0) {
+                infoText += `Error Lines: ${data.error_lines.length.toLocaleString()}<br>`;
+            }
+            if (data.predicted_points && data.predicted_points.length > 0) {
+                infoText += `Predicted Points: ${data.predicted_points.length.toLocaleString()}<br>`;
+            }
+            infoText += `Bounds: X[${data.bounds.min_x.toFixed(2)}, ${data.bounds.max_x.toFixed(2)}]<br>` +
+                       `Y[${data.bounds.min_y.toFixed(2)}, ${data.bounds.max_y.toFixed(2)}]<br>` +
+                       `Z[${data.bounds.min_z.toFixed(2)}, ${data.bounds.max_z.toFixed(2)}]`;
+            
+            document.getElementById('pointCount').innerHTML = infoText;
+            pointsData = data;
+            fitCameraToPointCloud();
+        }
+        
+        function loadMultiFramePointCloud(data) {
+            isMultiFrame = true;
+            pointsData = data;
+            currentFrameIndex = 0;
+            
+            document.getElementById('timeControls').style.display = 'block';
+            document.getElementById('multiFrameInfo').style.display = 'block';
+            
+            const timeSlider = document.getElementById('timeSlider');
+            timeSlider.min = 1;
+            timeSlider.max = data.total_frames - 1;
+            timeSlider.value = 1;
+            
+            document.getElementById('totalFrames').textContent = data.total_frames;
+            loadFrameAtIndex(0);
+            
+            let infoText = `Multi-frame point cloud<br>` +
+                `Total frames: ${data.total_frames}<br>` +
+                `Total points: ${data.total_points.toLocaleString()}<br>`;
+            
+            if (data.total_arrows > 0) {
+                infoText += `Total arrows: ${data.total_arrows.toLocaleString()}<br>`;
+            }
+            if (data.total_error_lines > 0) {
+                infoText += `Total error lines: ${data.total_error_lines.toLocaleString()}<br>`;
+            }
+            if (data.total_predicted_points > 0) {
+                infoText += `Total predicted points: ${data.total_predicted_points.toLocaleString()}<br>`;
+            }
+            
+            infoText += `Global bounds: X[${data.global_bounds.min_x.toFixed(2)}, ${data.global_bounds.max_x.toFixed(2)}]`;
+            document.getElementById('multiFrameInfo').innerHTML = infoText;
+            fitCameraToPointCloud();
+        }
+
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            document.getElementById('loading').style.display = 'block';
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const data = JSON.parse(e.target.result);
+                    
+                    if (data.type === "multi_frame_point_cloud_with_arrows" || data.type === "multi_frame_point_cloud") {
+                        loadMultiFramePointCloud(data);
+                    } else {
+                        loadSingleFramePointCloud(data);
+                    }
+                } catch (error) {
+                    alert('Error parsing JSON file: ' + error.message);
+                } finally {
+                    document.getElementById('loading').style.display = 'none';
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        function fitCameraToPointCloud() {
+            if (!pointsData) return;
+            
+            let bounds;
+            if (isMultiFrame) {
+                bounds = pointsData.global_bounds;
+            } else {
+                bounds = pointsData.bounds;
+            }
+            
+            const centerX = (bounds.min_x + bounds.max_x) / 2;
+            const centerY = (bounds.min_y + bounds.max_y) / 2;
+            const centerZ = (bounds.min_z + bounds.max_z) / 2;
+            
+            const sizeX = bounds.max_x - bounds.min_x;
+            const sizeY = bounds.max_y - bounds.min_y;
+            const sizeZ = bounds.max_z - bounds.min_z;
+            const maxSize = Math.max(sizeX, sizeY, sizeZ);
+            
+            const distance = maxSize * 2;
+            camera.position.set(centerX, centerY, centerZ + distance);
+            camera.lookAt(centerX, centerY, centerZ);
+            
+            originalCameraPosition = camera.position.clone();
+        }
+
+        function onTimeSliderChange(event) {
+            if (!isMultiFrame) return;
+            
+            let frameIndex = parseInt(event.target.value);
+            if (frameIndex < 1) {
+                frameIndex = 1;
+                event.target.value = 1;
+            }
+            
+            loadFrameAtIndex(frameIndex);
+        }
+        
+        function togglePlayPause() {
+            if (!isMultiFrame) return;
+            
+            isPlaying = !isPlaying;
+            const button = document.getElementById('playPause');
+            
+            if (isPlaying) {
+                button.textContent = 'Pause';
+                startPlayback();
+            } else {
+                button.textContent = 'Play';
+                stopPlayback();
+            }
+        }
+        
+        function startPlayback() {
+            if (playInterval) clearInterval(playInterval);
+            
+            const speed = parseInt(document.getElementById('playSpeed').value);
+            
+            playInterval = setInterval(() => {
+                if (!isMultiFrame || !pointsData) {
+                    stopPlayback();
+                    return;
+                }
+                
+                currentFrameIndex = (currentFrameIndex + 1) % pointsData.total_frames;
+                loadFrameAtIndex(currentFrameIndex);
+            }, speed);
+        }
+        
+        function stopPlayback() {
+            if (playInterval) {
+                clearInterval(playInterval);
+                playInterval = null;
+            }
+            isPlaying = false;
+            document.getElementById('playPause').textContent = 'Play';
+        }
+        
+        function stepForward() {
+            if (!isMultiFrame || !pointsData) return;
+            
+            stopPlayback();
+            currentFrameIndex = (currentFrameIndex + 1) % pointsData.total_frames;
+            loadFrameAtIndex(currentFrameIndex);
+        }
+        
+        function stepBackward() {
+            if (!isMultiFrame || !pointsData) return;
+            
+            stopPlayback();
+            currentFrameIndex = (currentFrameIndex - 1 + pointsData.total_frames) % pointsData.total_frames;
+            loadFrameAtIndex(currentFrameIndex);
+        }
+
+        function resetView() {
+            if (originalCameraPosition) {
+                camera.position.copy(originalCameraPosition);
+                camera.lookAt(0, 0, 0);
+            }
+            
+            if (pointCloud) {
+                pointCloud.rotation.set(0, 0, 0);
+            }
+            
+            window.targetRotationX = 0;
+            window.targetRotationY = 0;
+        }
+        
+        function toggleColors() {
+            if (!pointCloud) return;
+            
+            useColors = !useColors;
+            
+            if (useColors) {
+                pointCloud.material.vertexColors = true;
+                document.getElementById('toggleColors').textContent = 'Toggle Colors';
+            } else {
+                pointCloud.material.vertexColors = false;
+                pointCloud.material.color.setHex(0xffffff);
+                document.getElementById('toggleColors').textContent = 'Show Colors';
+            }
+            
+            pointCloud.material.needsUpdate = true;
+        }
+
+        function toggleArrows() {
+            showArrows = !showArrows;
+            const button = document.getElementById('toggleArrows');
+            
+            if (arrowGroup) {
+                if (showArrows) {
+                    scene.add(arrowGroup);
+                    button.textContent = 'Hide Arrows';
+                } else {
+                    scene.remove(arrowGroup);
+                    button.textContent = 'Show Arrows';
+                }
+            }
+        }
+
+        function toggleErrorLines() {
+            showErrorLines = !showErrorLines;
+            const button = document.getElementById('toggleErrorLines');
+            
+            if (errorLineGroup) {
+                if (showErrorLines) {
+                    scene.add(errorLineGroup);
+                    button.textContent = 'Hide Error Lines';
+                } else {
+                    scene.remove(errorLineGroup);
+                    button.textContent = 'Show Error Lines';
+                }
+            }
+        }
+
+        function togglePredictedPoints() {
+            showPredictedPoints = !showPredictedPoints;
+            const button = document.getElementById('togglePredictedPoints');
+            
+            if (predictedPointsGroup) {
+                if (showPredictedPoints) {
+                    scene.add(predictedPointsGroup);
+                    button.textContent = 'Hide Predicted Points';
+                } else {
+                    scene.remove(predictedPointsGroup);
+                    button.textContent = 'Show Predicted Points';
+                }
+            }
+        }
+
+        function toggleDepthPoints() {
+            showDepthPoints = !showDepthPoints;
+            const button = document.getElementById('toggleDepthPoints');
+            
+            if (showDepthPoints) {
+                button.textContent = 'Hide Depth Points';
+            } else {
+                button.textContent = 'Show Depth Points';
+            }
+            
+            // Reload current frame to apply the filter
+            if (isMultiFrame && pointsData) {
+                loadFrameAtIndex(currentFrameIndex);
+            } else if (!isMultiFrame && pointsData) {
+                loadPointCloudGeometry(
+                    pointsData.points, 
+                    pointsData.colors, 
+                    pointsData.track_start_points || [],
+                    pointsData.track_arrows || [],
+                    pointsData.error_lines || [],
+                    pointsData.predicted_points || []
+                );
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function setupControls() {
+            let mouseDown = false;
+            let mouseX = 0;
+            let mouseY = 0;
+            let targetRotationX = 0;
+            let targetRotationY = 0;
+            let rotationX = 0;
+            let rotationY = 0;
+            
+            const keys = {
+                ArrowLeft: false,
+                ArrowRight: false,
+                ArrowUp: false,
+                ArrowDown: false
+            };
+            
+            renderer.domElement.addEventListener('mousedown', (event) => {
+                event.preventDefault();
+                mouseDown = true;
+                mouseX = event.clientX;
+                mouseY = event.clientY;
+            });
+            
+            renderer.domElement.addEventListener('mousemove', (event) => {
+                if (!mouseDown) return;
+                
+                const deltaX = event.clientX - mouseX;
+                const deltaY = event.clientY - mouseY;
+                
+                targetRotationY += deltaX * 0.01;
+                targetRotationX += deltaY * 0.01;
+                
+                mouseX = event.clientX;
+                mouseY = event.clientY;
+            });
+            
+            renderer.domElement.addEventListener('mouseup', () => {
+                mouseDown = false;
+            });
+            
+            renderer.domElement.addEventListener('wheel', (event) => {
+                event.preventDefault();
+                
+                const cameraDirection = new THREE.Vector3();
+                camera.getWorldDirection(cameraDirection);
+                
+                const zoomDistance = 5.0;
+                const targetPoint = camera.position.clone().add(cameraDirection.multiplyScalar(zoomDistance));
+                
+                const zoomFactor = event.deltaY > 0 ? 0.8 : 1.25;
+                
+                const direction = targetPoint.clone().sub(camera.position);
+                const newDistance = direction.length() * (2 - zoomFactor);
+                
+                if (newDistance > 0.1) {
+                    direction.normalize();
+                    camera.position.copy(targetPoint.clone().sub(direction.multiplyScalar(newDistance)));
+                }
+            });
+            
+            window.addEventListener('keydown', (event) => {
+                if (keys.hasOwnProperty(event.code)) {
+                    event.preventDefault();
+                    keys[event.code] = true;
+                }
+            });
+            
+            window.addEventListener('keyup', (event) => {
+                if (keys.hasOwnProperty(event.code)) {
+                    event.preventDefault();
+                    keys[event.code] = false;
+                }
+            });
+            
+            function updateControls() {
+                const moveSpeed = 0.1;
+                
+                if (keys.ArrowLeft) {
+                    camera.position.x -= moveSpeed;
+                }
+                if (keys.ArrowRight) {
+                    camera.position.x += moveSpeed;
+                }
+                if (keys.ArrowUp) {
+                    camera.position.y += moveSpeed;
+                }
+                if (keys.ArrowDown) {
+                    camera.position.y -= moveSpeed;
+                }
+                
+                rotationX += (targetRotationX - rotationX) * 0.1;
+                rotationY += (targetRotationY - rotationY) * 0.1;
+                
+                if (pointCloud) {
+                    pointCloud.rotation.x = rotationX;
+                    pointCloud.rotation.y = rotationY;
+                }
+                
+                if (arrowGroup) {
+                    arrowGroup.rotation.x = rotationX;
+                    arrowGroup.rotation.y = rotationY;
+                }
+                
+                if (errorLineGroup) {
+                    errorLineGroup.rotation.x = rotationX;
+                    errorLineGroup.rotation.y = rotationY;
+                }
+                
+                if (predictedPointsGroup) {
+                    predictedPointsGroup.rotation.x = rotationX;
+                    predictedPointsGroup.rotation.y = rotationY;
+                }
+            }
+            
+            window.updateControls = updateControls;
+            window.targetRotationX = targetRotationX;
+            window.targetRotationY = targetRotationY;
+        }
+
+        function setupEventListeners() {
+            document.getElementById('fileInput').addEventListener('change', handleFileSelect);
+            
+            const pointSizeSlider = document.getElementById('pointSize');
+            const pointSizeValue = document.getElementById('pointSizeValue');
+            
+            pointSizeSlider.addEventListener('input', (e) => {
+                const size = parseFloat(e.target.value);
+                pointSizeValue.textContent = size.toFixed(1);
+                if (pointCloud) {
+                    pointCloud.material.size = size;
+                }
+                if (predictedPointsGroup) {
+                    predictedPointsGroup.material.size = size * 1.2;
+                }
+            });
+
+            const arrowScaleSlider = document.getElementById('arrowScale');
+            const arrowScaleValue = document.getElementById('arrowScaleValue');
+            
+            arrowScaleSlider.addEventListener('input', (e) => {
+                const scale = parseFloat(e.target.value);
+                arrowScaleValue.textContent = scale.toFixed(1);
+                
+                // Reload arrows with new scale if we have current frame data
+                if (isMultiFrame && pointsData && pointsData.frames[currentFrameIndex]) {
+                    const frameData = pointsData.frames[currentFrameIndex];
+                    if (frameData.track_arrows && frameData.track_arrows.length > 0) {
+                        loadArrows(frameData.track_arrows, scale);
+                    }
+                } else if (!isMultiFrame && pointsData && pointsData.track_arrows) {
+                    loadArrows(pointsData.track_arrows, scale);
+                }
+            });
+
+            const errorLineScaleSlider = document.getElementById('errorLineScale');
+            const errorLineScaleValue = document.getElementById('errorLineScaleValue');
+            
+            errorLineScaleSlider.addEventListener('input', (e) => {
+                const scale = parseFloat(e.target.value);
+                errorLineScaleValue.textContent = scale.toFixed(1);
+                
+                // Reload error lines with new scale if we have current frame data
+                if (isMultiFrame && pointsData && pointsData.frames[currentFrameIndex]) {
+                    const frameData = pointsData.frames[currentFrameIndex];
+                    if (frameData.error_lines && frameData.error_lines.length > 0) {
+                        loadErrorLines(frameData.error_lines, scale);
+                    }
+                } else if (!isMultiFrame && pointsData && pointsData.error_lines) {
+                    loadErrorLines(pointsData.error_lines, scale);
+                }
+            });
+            
+            document.getElementById('resetView').addEventListener('click', resetView);
+            document.getElementById('toggleColors').addEventListener('click', toggleColors);
+            document.getElementById('toggleArrows').addEventListener('click', toggleArrows);
+            document.getElementById('toggleDepthPoints').addEventListener('click', toggleDepthPoints);
+            document.getElementById('toggleErrorLines').addEventListener('click', toggleErrorLines);
+            document.getElementById('togglePredictedPoints').addEventListener('click', togglePredictedPoints);
+            
+            document.getElementById('timeSlider').addEventListener('input', onTimeSliderChange);
+            document.getElementById('playPause').addEventListener('click', togglePlayPause);
+            document.getElementById('stepBack').addEventListener('click', stepBackward);
+            document.getElementById('stepForward').addEventListener('click', stepForward);
+            
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            if (window.updateControls) {
+                window.updateControls();
+            }
+            
+            renderer.render(scene, camera);
+        }
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x000000);
+            
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.01, 1000);
+            camera.position.set(0, 0, 5);
+            originalCameraPosition = camera.position.clone();
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.getElementById('container').appendChild(renderer.domElement);
+            
+            setupControls();
+            
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.4);
+            directionalLight.position.set(1, 1, 1);
+            scene.add(directionalLight);
+            
+            setupEventListeners();
+            
+            animate();
+        }
+        
+        init();
+    </script>
+</body>
+</html>
