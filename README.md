@@ -26,7 +26,7 @@ The repository is organized as follows:
 
 ## Usage
 
-1. Navigate to the `Code/` directory and open the Python notebook.  
+1. Navigate to the `Code/` directory and open the Jupyter notebook.  
 2. Run the notebook to generate the results.  
 3. The output will be saved in the `Video_0/` folder for visualization.
 
