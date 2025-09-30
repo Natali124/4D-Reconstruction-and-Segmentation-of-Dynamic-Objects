@@ -16,7 +16,7 @@ The repository is organized as follows:
   Provides additional quantitative and qualitative results on tested Kubric videos.
 
 - **`Code/`**  
-  Contains a Python notebook with a minimal working example to reproduce the results described in the thesis.
+  Contains a Jupyter notebook with a minimal working example to reproduce the results described in the thesis.
 
 - **`Data/`**  
   Provides an example dataset (**Example 1 from the thesis Kubric dataset**) used by the notebook.
